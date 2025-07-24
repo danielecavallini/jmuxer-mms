@@ -250,8 +250,8 @@ export class H264Parser {
         let decoder = new ExpGolomb(unit.getPayload());
         // skip NALu type
         decoder.readUByte();
-        unit.isfmb = decoder.readUEG() === 0;
-        unit.stype = decoder.readUEG();
+        unit.isfmb = decoder.readUEG() === 0;   // first_mb_in_slice (0 = first macroblock in slice)
+        unit.stype = decoder.readUEG(); // slice_type (0 = P slice, 1 = B slice, 2 = I slice, 3 = SP slice, 4 = SI slice)
     }
     constructor(remuxer) {
         this.remuxer = remuxer;
@@ -309,10 +309,10 @@ export class H264Parser {
                 push = true;
                 break;
             case NALU.AUD:
-                debug.log('AUD - ignoing');
+                debug.log('AUD - ignoring');
                 break;
             case NALU.SEI:
-                debug.log('SEI - ignoing');
+                debug.log('SEI - ignoring');
                 break;
             default:
         }

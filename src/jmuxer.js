@@ -1,7 +1,8 @@
 import * as debug from './util/debug';
-import { NALU } from './util/nalu.js';
+import { H265NALU, NALU } from './util/nalu.js';
 import { appendByteArray } from './util/utils.js';
 import { H264Parser } from './parsers/h264.js';
+import { H265Parser } from './parsers/h265.js';
 import { AACParser } from './parsers/aac.js';
 import Event from './util/event';
 import RemuxController from './controller/remux.js';
@@ -147,11 +148,15 @@ export default class JMuxer extends Event {
 
         if (data.video) {
             data.video = appendByteArray(this.remainingData, data.video);
+            // In slices (array di buffers) ci sono le NALUs senza lo start code. N.B.: il parser H264 è in grado di riconoscere anche lo start code H265, 
+            // per cui non è necessario usare un parser H265 specifico!
             [slices, left] = H264Parser.extractNALu(data.video);
             this.remainingData = left || new Uint8Array();
 
-            if (slices.length > 0) {
-                chunks.video = this.getVideoFrames(slices, duration, data.compositionTimeOffset);
+            // chunks.video è un array di 'frames' dove ogni 'frame' è un'array che contiene una o più NALUs, di cui una sola è una slice vcl
+            // (video coding layer) IDR o non-IDR.
+            if (slices.length > 0) {    
+                chunks.video = this.getVideoFrames(slices, duration, data.compositionTimeOffset);   
                 remux = true;
             } else {
                 debug.error('Failed to extract any NAL units from video data:', left);
@@ -195,22 +200,42 @@ export default class JMuxer extends Event {
             this.pendingUnits = {};
         }
         for (let nalu of nalus) {
-            let unit = new NALU(nalu);
-            if (unit.type() === NALU.IDR || unit.type() === NALU.NDR) {
-                H264Parser.parseHeader(unit);
+            if (this.options.mode === 'h265video' || this.options.mode === 'h265both') {
+                let unit = new H265NALU(nalu);
+                if (unit.isvcl) {
+                    H265Parser.parseHeader(unit);   // Assegna is_first_slice_in_pict
+                }
+                if (units.length && vcl && (unit.is_first_slice_in_pict || !unit.isvcl)) {
+                    frames.push({
+                        units,
+                        keyFrame
+                    });
+                    units = [];
+                    keyFrame = false;
+                    vcl = false;
+                }
+                units.push(unit);
+                keyFrame = keyFrame || unit.isKeyframe();
+                vcl = vcl || unit.isvcl;
             }
-            if (units.length && vcl && (unit.isfmb || !unit.isvcl)) {
-                frames.push({
-                    units,
-                    keyFrame
-                });
-                units = [];
-                keyFrame = false;
-                vcl = false;
+            else {
+                let unit = new NALU(nalu);
+                if (unit.type() === NALU.IDR || unit.type() === NALU.NDR) {
+                    H264Parser.parseHeader(unit);   // Assegna isfmb e stype
+                }
+                if (units.length && vcl && (unit.isfmb || !unit.isvcl)) {
+                    frames.push({
+                        units,
+                        keyFrame
+                    });
+                    units = [];
+                    keyFrame = false;
+                    vcl = false;
+                }
+                units.push(unit);
+                keyFrame = keyFrame || unit.isKeyframe();
+                vcl = vcl || unit.isvcl;
             }
-            units.push(unit);
-            keyFrame = keyFrame || unit.isKeyframe();
-            vcl = vcl || unit.isvcl;
         }
         if (units.length) {
             // lets keep indecisive nalus as pending in case of fixed fps

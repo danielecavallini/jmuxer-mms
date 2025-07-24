@@ -4,9 +4,10 @@
  */
 
 export class MP4 {
-    static init() {
+    static init(tracks) {
         MP4.types = {
             avc1: [], // codingname
+            hev1: [], // h265 codingname
             avcC: [],
             btrt: [],
             dinf: [],
@@ -131,9 +132,20 @@ export class MP4 {
 
         var majorBrand = new Uint8Array([105, 115, 111, 109]); // isom
         var avc1Brand = new Uint8Array([97, 118, 99, 49]); // avc1
-        var minorVersion = new Uint8Array([0, 0, 0, 1]);
+        var hev1Brand = new Uint8Array([104, 101, 118, 49]); // hev1
+        var minorVersion = new Uint8Array([0, 0, 0, 1]);    // could be also [0, 0, 2, 0] if this does not work...
+        let codecBrand = avc1Brand; // default codec brand
+        MP4.vcodec = 4;
 
-        MP4.FTYP = MP4.box(MP4.types.ftyp, majorBrand, minorVersion, majorBrand, avc1Brand);
+        for (let i = 0; i < tracks.length; i++) {
+            let trk = tracks[i];
+            if (trk.type === 'h265video') {
+                codecBrand = hev1Brand;
+                MP4.vcodec = 5;
+                break;
+            }
+        }
+        MP4.FTYP = MP4.box(MP4.types.ftyp, majorBrand, minorVersion, majorBrand, codecBrand);
         MP4.DINF = MP4.box(MP4.types.dinf, MP4.box(MP4.types.dref, dref));
     }
 
@@ -302,6 +314,9 @@ export class MP4 {
         return MP4.box(MP4.types.stbl, MP4.stsd(track), MP4.box(MP4.types.stts, MP4.STTS), MP4.box(MP4.types.stsc, MP4.STSC), MP4.box(MP4.types.stsz, MP4.STSZ), MP4.box(MP4.types.stco, MP4.STCO));
     }
 
+    // 'track' è l'oggetto mp4Track della classe H264Remuxer. track.sps/track.pps sono arrays di Uint8Array. 
+    // Ogni elemento di track.sps/track.pps contiene un set di parametri SPS/PPS. Jmuxer gestisce tuttavia un unico set di parametri SPS/PPS, per cui
+    // track.sps/track.pps sono arrays con un solo elemento.
     static avc1(track) {
         var sps = [],
             pps = [],
@@ -445,7 +460,11 @@ export class MP4 {
         if (track.type === 'audio') {
             return MP4.box(MP4.types.stsd, MP4.STSD, MP4.mp4a(track));
         } else {
-            return MP4.box(MP4.types.stsd, MP4.STSD, MP4.avc1(track));
+            // video track
+            if (MP4.vcodec === 5) 
+                return MP4.box(MP4.types.stsd, MP4.STSD, MP4.hev1(track));
+            else
+                return MP4.box(MP4.types.stsd, MP4.STSD, MP4.avc1(track));
         }
     }
 
@@ -605,9 +624,10 @@ export class MP4 {
         return MP4.box(MP4.types.trun, array);
     }
 
+    // tracks e' un array che contiene un solo elemento consistente nell'oggetto mp4track del videoRemuxer (H264Remuxer o H265Remuxer)
     static initSegment(tracks, duration, timescale) {
         if (!MP4.types) {
-            MP4.init();
+            MP4.init(tracks);
         }
         var movie = MP4.moov(tracks, duration, timescale),
             result;

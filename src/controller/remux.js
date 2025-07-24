@@ -2,6 +2,7 @@ import * as debug from '../util/debug';
 import { MP4 } from '../util/mp4-generator.js';
 import { AACRemuxer } from '../remuxer/aac.js';
 import { H264Remuxer } from '../remuxer/h264.js';
+import { H265Remuxer } from '../remuxer/h265.js';
 import { appendByteArray, secToTime } from '../util/utils.js';
 import Event from '../util/event';
 
@@ -20,11 +21,15 @@ export default class RemuxController extends Event {
     }
 
     addTrack(type) {
+        if (type === 'h265video' || type === 'h265both') {
+            this.tracks.video = new H265Remuxer(this.timescale);
+            this.trackTypes.push('video');
+        }
         if (type === 'video' || type === 'both') {
             this.tracks.video = new H264Remuxer(this.timescale);
             this.trackTypes.push('video');
         }
-        if (type === 'audio' || type === 'both') {
+        if (type === 'audio' || type === 'both' || type === 'h265both') {
             const aacRemuxer = new AACRemuxer(this.timescale);
             this.aacParser = aacRemuxer.getAacParser();
             this.tracks.audio = aacRemuxer;
@@ -55,6 +60,8 @@ export default class RemuxController extends Event {
         } else {
             for (let type of this.trackTypes) {
                 let track = this.tracks[type];
+                // L'array dei samples viene consumato: il contenuto delle unit (slices) viene accodato in un buffer (che costituirà il payload restituito) e parallelamente
+                // viene generato un'array di 'samples MP4' ovvero un array di oggetti che contengono le informazioni necessarie per generare il payload completo MP4.
                 let pay = track.getPayload();
                 if (pay && pay.byteLength) {
                     const moof = MP4.moof(this.seq, track.dts, track.mp4track);
@@ -109,6 +116,8 @@ export default class RemuxController extends Event {
         return true;
     }
 
+    // 'data' è un oggetto contenente al più 2 array di 'frames' (audio e/o video) dove ogni 'frame' audio/video è un'array che contiene una o più NALUs,
+    // di cui una sola è una slice vcl (video coding layer) IDR o non-IDR.
     remux(data) {
         for (let type of this.trackTypes) {
             let frames = data[type];
@@ -117,6 +126,6 @@ export default class RemuxController extends Event {
                 this.tracks[type].remux(frames);
             }
         }
-        this.flush();
+        this.flush();   // Qui viene generato il payload MP4
     }
 }

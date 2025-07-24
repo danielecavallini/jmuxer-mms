@@ -1,8 +1,8 @@
 import * as debug from '../util/debug';
-import { H264Parser } from '../parsers/h264.js';
+import { H265Parser } from '../parsers/h265.js';
 import { BaseRemuxer } from './base.js';
 
-export class H264Remuxer extends BaseRemuxer {
+export class H265Remuxer extends BaseRemuxer {
 
     constructor(timescale) {
         super();
@@ -11,45 +11,52 @@ export class H264Remuxer extends BaseRemuxer {
         this.dts = 0;
         this.mp4track = {
             id: BaseRemuxer.getTrackID(),
-            type: 'video',
+            type: 'h265video',
             len: 0,
             fragmented: true,
+            vps: '',
             sps: '',
             pps: '',
+            HEVCDecoderConfigurationRecord: {},
             fps: 30,
             width: 0,
             height: 0,
             timescale: timescale,
             duration: timescale,
+            dumped: false,  // debugging purposes
             samples: [],
         };
         this.samples = [];
-        this.h264 = new H264Parser(this);
+        this.h265 = new H265Parser(this);
     }
 
     resetTrack() {
         this.readyToDecode = false;
+        this.mp4track.vps = '';
         this.mp4track.sps = '';
         this.mp4track.pps = '';
         this.nextDts = 0;
         this.dts = 0;
     }
 
+    
+    // 'frames' è un array di 'video frames' dove ogni 'frame' è un'array che contiene una o più NALUs,
+    // di cui una sola è una slice vcl (video coding layer) IDR o non-IDR.
     remux(frames) {
         for (let frame of frames) {
             let units = [];
             let size = 0;
             for (let unit of frame.units) {
-                // Le slice di ogni frame vengono accodate solo se il parsing ha successo (i.e: il NAL-type è valido e vale unicamente SPS, PPS, IDR o NDR)
-                if (this.h264.parseNAL(unit)) {
+                // Le slice di ogni frame vengono accodate solo se il parsing ha successo (i.e: si tratta di un NAL-type H265 valido)
+                if (this.h265.parseNAL(unit)) {
                     units.push(unit);
                     size += unit.getSize();
                 }
             }
             if (units.length > 0 && this.readyToDecode) {
                 this.mp4track.len += size;
-                // I frames eventualmente 'ripuliti' delle NALUs indesiderate vengono riassemblati in un'array di 'samples', 
-                // che verrà poi utilizzato per generare il payload MP4
+                // I frames eventualmente 'ripuliti' delle NALUs indesiderate vengono riassemblati in 'samples', 
+                // che verranno utilizzati per generare il payload MP4
                 this.samples.push({
                     units: units,
                     size: size,
@@ -78,7 +85,7 @@ export class H264Remuxer extends BaseRemuxer {
 
             duration = sample.duration;
             if (duration <= 0) {
-                debug.log(`remuxer: invalid sample duration at DTS: ${this.nextDts} :${duration}`);
+                debug.log(`h265remuxer: invalid sample duration at DTS: ${this.nextDts} :${duration}`);
                 this.mp4track.len -= sample.size;
                 continue;
             }
