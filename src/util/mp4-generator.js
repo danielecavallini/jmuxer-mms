@@ -7,8 +7,9 @@ export class MP4 {
     static init(tracks) {
         MP4.types = {
             avc1: [], // codingname
-            hev1: [], // h265 codingname
             avcC: [],
+            hev1: [], // h265 codingname
+            hvcC: [],
             btrt: [],
             dinf: [],
             dref: [],
@@ -384,6 +385,118 @@ export class MP4 {
             0x00, 0x18,   // depth = 24
             0x11, 0x11]), // pre_defined = -1
         avcc,
+        MP4.box(MP4.types.btrt, new Uint8Array([
+            0x00, 0x1c, 0x9c, 0x80, // bufferSizeDB
+            0x00, 0x2d, 0xc6, 0xc0, // maxBitrate
+            0x00, 0x2d, 0xc6, 0xc0])) // avgBitrate
+        );
+    }
+
+    // 'track' è l'oggetto mp4Track della classe H265Remuxer. Cfr. static avc1()
+    static hev1(track) {
+        let vps = new Uint8Array([]),
+            sps = new Uint8Array([]),
+            pps = new Uint8Array([]),
+            i,
+            data,
+            len;
+    
+        // assemble the VPSs
+        vps.push(H265NALU.VPS); // array_completeness(hev1 boxes) = 0 u(1) + reserved = 0 u(1) + NAL_unit_type = VPS u(6)
+        vps.push((track.vps.length >>> 8) & 0xFF);
+        vps.push((track.vps.length & 0xFF));    // numNalus u(16)
+        for (i = 0; i < track.vps.length; i++) {
+            data = track.vps[i];
+            len = data.byteLength;
+            vps.push((len >>> 8) & 0xFF);
+            vps.push((len & 0xFF));
+            vps = vps.concat(Array.prototype.slice.call(data)); // VPS
+        }
+
+        // assemble the SPSs
+        sps.push(H265NALU.SPS); // array_completeness(hev1 boxes) = 0 u(1) + reserved = 0 u(1) + NAL_unit_type = SPS u(6)
+        sps.push((track.sps.length >>> 8) & 0xFF);
+        sps.push((track.sps.length & 0xFF));    // numNalus u(16)
+        for (i = 0; i < track.sps.length; i++) {
+            data = track.sps[i];
+            len = data.byteLength;
+            sps.push((len >>> 8) & 0xFF);
+            sps.push((len & 0xFF));
+            sps = sps.concat(Array.prototype.slice.call(data)); // SPS
+        }
+
+        // assemble the PPSs
+        pps.push(H265NALU.PPS); // array_completeness(hev1 boxes) = 0 u(1) + reserved = 0 u(1) + NAL_unit_type = PPS u(6)
+        pps.push((track.pps.length >>> 8) & 0xFF);
+        pps.push((track.pps.length & 0xFF));    // numNalus u(16)
+        for (i = 0; i < track.pps.length; i++) {
+            data = track.pps[i];
+            len = data.byteLength;
+            pps.push((len >>> 8) & 0xFF);
+            pps.push((len & 0xFF));
+            pps = pps.concat(Array.prototype.slice.call(data)); // PPS
+        }
+
+        let segmentation = track.hvcc.min_spatial_segmentation_idc | 0xf000;
+        let parallelism = track.hvcc.parallelismType | 0xfc;
+        let chromaFormat = track.hvcc.chromaFormat | 0xfc;
+        let bitDepthLumaMinus8 = track.hvcc.bitDepthLumaMinus8 | 0xf8;
+        let bitDepthChromaMinus8 = track.hvcc.bitDepthChromaMinus8 | 0xf8;
+
+        let hvcc = MP4.box(MP4.types.hvcC, new Uint8Array([
+                track.hvcc.configurationVersion,   // version ( u(8): 0x01 )
+                track.hvcc.general_profile_space << 6 | track.hvcc.general_tier_flag << 5 | track.hvcc.general_profile_idc, // u(2)u(1)u(5)
+                (track.hvcc.general_profile_compatibility_flags >> 24) & 0xFF,
+                (track.hvcc.general_profile_compatibility_flags >> 16) & 0xFF,
+                (track.hvcc.general_profile_compatibility_flags >> 8) & 0xFF,
+                track.hvcc.general_profile_compatibility_flags & 0xFF, // u(32)
+                (track.hvcc.general_constraint_indicator_flags_h >> 8) & 0xFF,
+                track.hvcc.general_constraint_indicator_flags_h & 0xFF,
+                (track.hvcc.general_constraint_indicator_flags_l >> 24) & 0xFF,
+                (track.hvcc.general_constraint_indicator_flags_l >> 16) & 0xFF,
+                (track.hvcc.general_constraint_indicator_flags_l >> 8) & 0xFF,
+                track.hvcc.general_constraint_indicator_flags_l & 0xFF, // general_constraint_indicator_flags u(48)
+                track.hvcc.general_level_idc, // u(8)
+                (segmentation >> 8) & 0xFF,
+                segmentation & 0xFF, // reserved = 1111b u(4) + min_spatial_segmentation_idc u(12) 
+                parallelism, // reserved = 111111b u(6) + parallelismType u(2) 
+                chromaFormat, // reserved = 111111b u(6) + chromaFormat u(2)
+                bitDepthLumaMinus8, // reserved = 11111b u(5) + bitDepthLumaMinus8 u(3)
+                bitDepthChromaMinus8, // reserved = 11111b u(5) + bitDepthChromaMinus8 u(3)
+                0x00, 0x00, // avgFrameRate u(16)
+                track.hvcc.constantFrameRate << 6 | track.hvcc.numTemporalLayers << 3 | track.hvcc.temporalIdNested << 2 | 0x03, // u(2)(3)(1) + lengthSizeMinusOne = 3 u(2)
+                0x03 // numOfArrays = 3 u(8) - (VPS/SPS/PPS)
+            ].concat(vps).concat(sps).concat(pps)));
+
+        return MP4.box(MP4.types.hev1, new Uint8Array([
+            0x00, 0x00, 0x00, // reserved
+            0x00, 0x00, 0x00, // reserved
+            0x00, 0x01, // data_reference_index
+            0x00, 0x00, // pre_defined
+            0x00, 0x00, // reserved
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, // pre_defined
+            (width >> 8) & 0xFF,
+            width & 0xff, // width
+            (height >> 8) & 0xFF,
+            height & 0xff, // height
+            0x00, 0x48, 0x00, 0x00, // horizresolution
+            0x00, 0x48, 0x00, 0x00, // vertresolution
+            0x00, 0x00, 0x00, 0x00, // reserved
+            0x00, 0x01, // frame_count
+            0x0b,
+            0x48, 0x45, 0x56, 0x43, // HEVC Coding
+            0x20, 0x43, 0x6f, 0x64,
+            0x69, 0x6e, 0x67, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, // compressorname
+            0x00, 0x18,   // depth = 24
+            0x11, 0x11]), // pre_defined = -1
+        hvcc,
         MP4.box(MP4.types.btrt, new Uint8Array([
             0x00, 0x1c, 0x9c, 0x80, // bufferSizeDB
             0x00, 0x2d, 0xc6, 0xc0, // maxBitrate

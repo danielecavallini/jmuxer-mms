@@ -163,7 +163,7 @@ export class H265Parser {
         // Parse the VPS PTL (Profile Tier Level) information
         parseAndUpdatePTL(decoder, vps_max_sub_layers_minus1, true);
 
-        this.track.HEVCDecoderConfigurationRecord = this.HEVCDecoderConfigurationRecord;
+        this.track.hvcc = this.HEVCDecoderConfigurationRecord;
     }
 
     parseSPS(sps) {
@@ -556,7 +556,7 @@ export class H265Parser {
         //     snprintf(attr, sizeof(attr), "%s.%d.4.L%d.B01", av_fourcc2str(st->codecpar->codec_tag), profile, level);
         // } else
 
-        this.track.HEVCDecoderConfigurationRecord = this.HEVCDecoderConfigurationRecord;
+        this.track.hvcc = this.HEVCDecoderConfigurationRecord;
 
         return true;
     }
@@ -613,7 +613,7 @@ export class H265Parser {
         else
             this.HEVCDecoderConfigurationRecord.parallelismType = 1; // slice-based parallel decoding
 
-        this.track.HEVCDecoderConfigurationRecord = this.HEVCDecoderConfigurationRecord;
+        this.track.hvcc = this.HEVCDecoderConfigurationRecord;
     }
 
 
@@ -636,6 +636,8 @@ export class H265Parser {
         debug.log(`     chromaFormat: ${this.HEVCDecoderConfigurationRecord.chromaFormat}`);
         debug.log(`     bitDepthLumaMinus8: ${this.HEVCDecoderConfigurationRecord.bitDepthLumaMinus8}`);
         debug.log(`     bitDepthChromaMinus8: ${this.HEVCDecoderConfigurationRecord.bitDepthChromaMinus8}`);
+        debug.log(`     avgFrameRate: ${this.HEVCDecoderConfigurationRecord.avgFrameRate}`);
+        debug.log(`     constantFrameRate: ${this.HEVCDecoderConfigurationRecord.constantFrameRate}`);
         debug.log('  ');
         debug.log('-------------------------------------');
         debug.log('  ');
@@ -699,9 +701,23 @@ export class H265Parser {
                 break;
         }
 
-        if (this.remuxer.readyToDecode && !this.track.dumped) {
+        if (this.remuxer.readyToDecode && !this.track.finalAdjustmentsDone) {
+            // Do some little final adjustments to the sample entry (cfr.: ISO/IEC 14496-15:2023 and hvcc_write() in ffmpeg's libavformat)
+            if (this.HEVCDecoderConfigurationRecord.min_spatial_segmentation_idc > 4096)
+                this.HEVCDecoderConfigurationRecord.min_spatial_segmentation_idc = 0; // 0 means unspecified
+            if (this.HEVCDecoderConfigurationRecord.min_spatial_segmentation_idc === 0)
+                this.HEVCDecoderConfigurationRecord.parallelismType = 0;
+            /*
+            * It's unclear how to properly compute these fields, so
+            * let's always set them to values meaning 'unspecified'.
+            */
+            this.HEVCDecoderConfigurationRecord.avgFrameRate = 0; 
+            this.HEVCDecoderConfigurationRecord.constantFrameRate = 0;
+
+            this.track.hvcc = this.HEVCDecoderConfigurationRecord;
+
             this.dumpTrack();
-            this.track.dumped = true;
+            this.track.finalAdjustmentsDone = true;
         }
 
         return push;

@@ -17,13 +17,13 @@ export class H265Remuxer extends BaseRemuxer {
             vps: '',
             sps: '',
             pps: '',
-            HEVCDecoderConfigurationRecord: {},
+            hvcc: {},
             fps: 30,
             width: 0,
             height: 0,
             timescale: timescale,
             duration: timescale,
-            dumped: false,  // debugging purposes
+            finalAdjustmentsDone: false,
             samples: [],
         };
         this.samples = [];
