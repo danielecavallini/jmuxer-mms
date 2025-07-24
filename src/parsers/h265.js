@@ -618,7 +618,7 @@ export class H265Parser {
 
 
     // Dump the HEVCDecoderConfigurationRecord and track information for debugging purposes    
-    dmpTrack() {
+    dumpTrack() {
         debug.log('HEVCDecoderConfigurationRecord:');
         debug.log(`     configurationVersion: ${this.HEVCDecoderConfigurationRecord.configurationVersion}`);
         debug.log(`     lengthSizeMinusOne: ${this.HEVCDecoderConfigurationRecord.lengthSizeMinusOne}`);
