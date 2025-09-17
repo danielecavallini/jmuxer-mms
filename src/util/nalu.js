@@ -108,7 +108,7 @@ export class H265NALU {
 
     constructor(data) {
         this.payload = data;
-        this.ntype = this.payload[0] & 0x7e;
+        this.ntype = this.payload[0] >> 1 & 0x3f; // nal_unit_type
         this.isvcl = (this.ntype >= 0 && this.ntype <= 23);
         this.is_first_slice_in_pict = false; // first_slice_in_picture_flag
     }

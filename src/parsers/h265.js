@@ -657,7 +657,9 @@ export class H265Parser {
                     this.parseVPS(unit.getPayload());
                     if (!this.remuxer.readyToDecode && this.track.pps && this.track.sps && this.track.vps) {
                         this.remuxer.readyToDecode = true;
+                        debug.log("Ready to decode!");
                     }
+                    debug.log("Got VPS...");
                 }
                 push = true;
                 break;
@@ -667,8 +669,10 @@ export class H265Parser {
                     if (this.parseSPS(unit.getPayload())) {
                         if (!this.remuxer.readyToDecode && this.track.pps && this.track.sps && this.track.vps) {
                             this.remuxer.readyToDecode = true;
+                            debug.log("Ready to decode!");
                         }
                     }
+                    debug.log("Got SPS...");
                 }
                 push = true;
                 break;
@@ -678,7 +682,9 @@ export class H265Parser {
                     this.parsePPS(unit.getPayload());
                     if (!this.remuxer.readyToDecode && this.track.pps && this.track.sps && this.track.vps) {
                         this.remuxer.readyToDecode = true;
+                        debug.log("Ready to decode!");
                     }
+                    debug.log("Got PPS...");
                 }
                 push = true;
                 break;
