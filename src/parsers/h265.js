@@ -1,6 +1,7 @@
 import { ExpGolomb } from '../util/exp-golomb.js';
 import { NALU, H265NALU } from '../util/nalu.js';
 import * as debug from '../util/debug';
+import { extractRbsp } from '../util/utils.js';
 
 export class H265Parser {
 
@@ -24,47 +25,68 @@ export class H265Parser {
             general_level_idc: 0,
             general_profile_idc: 0,
             general_profile_compatibility_flags : 0xffffffff,
-            general_constraint_indicator_flags_h : 0xffff,
-            general_constraint_indicator_flags_l : 0xffffffff,
-            min_spatial_segmentation_idc: 4097,
+            general_constraint_indicator_flags : Uint8Array = new Uint8Array(6).fill(0xFF),
+            min_spatial_segmentation_idc : 0,
+            general_profile_space,
+            temporalIdNested : 0,
+            chromaFormat : 1,
+            bitDepthLumaMinus8 : 0,
+            bitDepthChromaMinus8 : 0,
+            parallelismType : 1, // 1: slice-based, 2: tile-based, 3: wavefront-based, 0: mixed-type
         };
     }
 
     parseAndUpdatePTL(decoder, max_sub_layers_minus1, stop_after_record_update) {
 
-        let general_tier_level = {
-            profile_space : decoder.readBits(2),
-            tier_flag : decoder.readBits(1),
-            profile_idc : decoder.readBits(5),
-            profile_compatibility_flags  : decoder.readBits(32),
-            constraint_indicator_flags_h : decoder.readBits(16),
-            constraint_indicator_flags_l : decoder.readBits(32),
-            level_idc : decoder.readBits(8),
+        let profile_space = decoder.readBits(2);
+        let tier_flag = decoder.readBits(1);
+        let profile_idc = decoder.readBits(5);
+
+        // Profile compatibility flags is used to build the codec string.
+        // Profile compatibility flag is "...a 32-bit value (...) specified in reverse bit order..."
+        // cfr.: https://developer.mozilla.org/en-US/docs/Web/Media/Guides/Formats/codecs_parameter?utm_source=chatgpt.com#hevc_mp4_quicktime_matroska
+        let profile_compatibility_flags = 0;
+        for (let j=0; j < 32; j++) {
+            let f = decoder.readBits(1);
+            profile_compatibility_flags |= (f << j);
         }
+        profile_compatibility_flags = profile_compatibility_flags;
+
+        // Constraints flags are 6 bytes of data also used to build the codec string. Each byte is encoded separately, so we can read and store 
+        // constraints in a byte array.
+        // cfr.: https://developer.mozilla.org/en-US/docs/Web/Media/Guides/Formats/codecs_parameter?utm_source=chatgpt.com#hevc_mp4_quicktime_matroska
+        // cfr.: https://www.etsi.org/deliver/etsi_ts/103200_103299/103285/01.04.01_60/ts_103285v010401p.pdf (Digital Video Broadcasting (DVB); 
+        // Codec identifiers and labels for video and audio coding methods; Part 1: Video)
+        let constraint_indicator_flags = new Uint8Array(6);
+        for (let j=0; j < 6; j++)
+            constraint_indicator_flags[j] = decoder.readBits(8);
+
+        let level_idc = decoder.readBits(8);
+
 
         /*
         * The value of general_profile_space in all the parameter sets must be
         * identical.
         */
-        this.HEVCDecoderConfigurationRecord.general_profile_space = general_tier_level.profile_space;
+        this.HEVCDecoderConfigurationRecord.general_profile_space = profile_space;
 
         /*
         * The level indication general_level_idc must indicate a level of
         * capability equal to or greater than the highest level indicated for the
         * highest tier in all the parameter sets.
         */
-        if (this.HEVCDecoderConfigurationRecord.general_tier_flag < general_tier_level.tier_flag)
-            this.HEVCDecoderConfigurationRecord.general_level_idc = general_tier_level.level_idc;
+        if (this.HEVCDecoderConfigurationRecord.general_tier_flag < tier_flag)
+            this.HEVCDecoderConfigurationRecord.general_level_idc = level_idc;
         else
-            if (this.HEVCDecoderConfigurationRecord.general_level_idc < general_tier_level.level_idc)
-                this.HEVCDecoderConfigurationRecord.general_level_idc = general_tier_level.level_idc;
+            if (this.HEVCDecoderConfigurationRecord.general_level_idc < level_idc)
+                this.HEVCDecoderConfigurationRecord.general_level_idc = level_idc;
 
         /*
         * The tier indication general_tier_flag must indicate a tier equal to or
         * greater than the highest tier indicated in all the parameter sets.
         */
-        if (this.HEVCDecoderConfigurationRecord.general_tier_flag < general_tier_level.tier_flag)
-            this.HEVCDecoderConfigurationRecord.general_tier_flag = general_tier_level.tier_flag;
+        if (this.HEVCDecoderConfigurationRecord.general_tier_flag < tier_flag)
+            this.HEVCDecoderConfigurationRecord.general_tier_flag = tier_flag;
 
         /*
         * The profile indication general_profile_idc must indicate a profile to
@@ -80,21 +102,21 @@ export class H265Parser {
         *
         * Note: set the profile to the highest value for the sake of simplicity.
         */
-        if (this.HEVCDecoderConfigurationRecord.general_profile_idc < general_tier_level.profile_idc)
-            this.HEVCDecoderConfigurationRecord.general_profile_idc = general_tier_level.profile_idc;
+        if (this.HEVCDecoderConfigurationRecord.general_profile_idc < profile_idc)
+            this.HEVCDecoderConfigurationRecord.general_profile_idc = profile_idc;
 
         /*
         * Each bit in general_profile_compatibility_flags may only be set if all
         * the parameter sets set that bit.
         */
-        this.HEVCDecoderConfigurationRecord.general_profile_compatibility_flags &= general_tier_level.profile_compatibility_flags;
+        this.HEVCDecoderConfigurationRecord.general_profile_compatibility_flags &= profile_compatibility_flags;
 
         /*
         * Each bit in general_constraint_indicator_flags may only be set if all
         * the parameter sets set that bit.
         */
-        this.HEVCDecoderConfigurationRecord.general_constraint_indicator_flags_h &= general_tier_level.constraint_indicator_flags_h;
-        this.HEVCDecoderConfigurationRecord.general_constraint_indicator_flags_l &= general_tier_level.constraint_indicator_flags_l;
+        for (let j=0; j < 6; j++)
+            this.HEVCDecoderConfigurationRecord.general_constraint_indicator_flags[j] &= constraint_indicator_flags[j];
         
         if (stop_after_record_update) {
             return;
@@ -141,7 +163,7 @@ export class H265Parser {
     parseVPS(vps) {
 
         this.track.vps = [new Uint8Array(vps)];
-        let decoder = new ExpGolomb(new Uint8Array(vps));
+        let decoder = new ExpGolomb(new Uint8Array(extractRbsp(vps.slice(2)))); // skip NALu header and remove emulation prevention bytes
 
         /* Skip:
         * vps_video_parameter_set_id u(4)
@@ -169,7 +191,7 @@ export class H265Parser {
     parseSPS(sps) {
 
         this.track.sps = [new Uint8Array(sps)];
-        let decoder = new ExpGolomb(new Uint8Array(sps));
+        let decoder = new ExpGolomb(new Uint8Array(extractRbsp(sps.slice(2)))); // skip NALu header and remove emulation prevention bytes
 
         decoder.skipBits(4); // sps_video_parameter_set_id
         let sps_max_sub_layers_minus1 = decoder.readBits(3);
@@ -195,7 +217,11 @@ export class H265Parser {
         this.HEVCDecoderConfigurationRecord.chromaFormat = decoder.readUEG();
 
         if (this.HEVCDecoderConfigurationRecord.chromaFormat === 3)
-            decoder.skipBits(1); // separate_colour_plane_flag
+        {
+            let scpl = decoder.readBits(1); // separate_colour_plane_flag
+            if (scpl===1)
+                this.HEVCDecoderConfigurationRecord.chromaFormat = 0;
+        }
 
         let pic_width_in_luma_samples = decoder.readUEG(); // pic_width_in_luma_samples
         let pic_height_in_luma_samples = decoder.readUEG(); // pic_height_in_luma_samples
@@ -218,7 +244,8 @@ export class H265Parser {
         let log2_max_pic_order_cnt_lsb_minus4 = decoder.readUEG();
 
         /* sps_sub_layer_ordering_info_present_flag */
-        let i = (decoder.readBits(1)===1 ? 0 : sps_max_sub_layers_minus1);
+        let sublayer_ordering_info = decoder.readBits(1);   // 1
+        let i = (sublayer_ordering_info===1 ? 0 : sps_max_sub_layers_minus1);
         for (; i <= sps_max_sub_layers_minus1; i++)
         {
             // skip_sub_layer_ordering_info
@@ -234,25 +261,30 @@ export class H265Parser {
         decoder.skipUEG(); // max_transform_hierarchy_depth_inter
         decoder.skipUEG(); // max_transform_hierarchy_depth_intra
 
-        if (decoder.readBits(1)===1 /*scaling_list_enabled_flag*/ && decoder.readBits(1)===1 /*sps_scaling_list_data_present_flag*/)   
+        let sl = decoder.readBits(1); // scaling_list_enabled_flag  (0)
+        if (sl === 1)
         {
-            // skip scaling list data
-            let ii = 0, j = 0, k = 0;
-            for (ii = 0; ii < 4; ii++)
-                for (j = 0; j < (ii === 3 ? 2 : 6); j++)
-                    if (decoder.readBits(1)===0)         // scaling_list_pred_mode_flag[i][j]
-                        decoder.skipUEG(); // scaling_list_pred_matrix_id_delta[i][j]
-                    else {
-                        let coeffs = 1 << (4 + (ii << 1));
-                        num_coeffs = (64 < coeffs) ? 64 : coeffs;
+            if (decoder.readBits(1)===1) // sps_scaling_list_data_present_flag
+            {
+                // skip scaling list data
+                let ii = 0, j = 0, k = 0;
+                for (ii = 0; ii < 4; ii++) {
+                    for (j = 0; j < 6; j += (ii === 3 ? 3 : 1)) {
+                        if (decoder.readBits(1)===0)  {       // scaling_list_pred_mode_flag[i][j]
+                            decoder.skipUEG(); // scaling_list_pred_matrix_id_delta[i][j]
+                        }
+                        else {
+                            if (ii > 1)
+                                decoder.skipEG(); // scaling_list_dc_coef_minus8[i-2][j]
 
-                        if (ii > 1)
-                            decoder.skipEG(); // scaling_list_dc_coef_minus8[i-2][j]
-
-                        for (k = 0; k < num_coeffs; k++)
-                            decoder.skipEG(); // scaling_list_delta_coef
+                            let coeffs = 1 << (4 + (ii << 1));
+                            let num_coeffs = (64 < coeffs) ? 64 : coeffs;
+                            for (k = 0; k < num_coeffs; k++)
+                                decoder.skipEG(); // scaling_list_delta_coef
+                        }
                     }
-
+                }
+            }
         }
 
         decoder.skipBits(1); // amp_enabled_flag
@@ -463,8 +495,9 @@ export class H265Parser {
 
                         if (nal_hrd_parameters_present_flag===1)
                         {
+                            let k = 0;
                             // skip_sub_layer_hrd_parameters
-                            for (l = 0; l <= cpb_cnt_minus1; l++) {
+                            for (k = 0; k <= cpb_cnt_minus1; k++) {
                                 decoder.skipUEG(); // bit_rate_value_minus1
                                 decoder.skipUEG(); // cpb_size_value_minus1
 
@@ -479,12 +512,13 @@ export class H265Parser {
                     
                         if (vcl_hrd_parameters_present_flag===1)
                         {
+                            let m = 0;
                             // skip_sub_layer_hrd_parameters
-                            for (l = 0; l <= cpb_cnt_minus1; l++) {
+                            for (m = 0; m <= cpb_cnt_minus1; m++) {
                                 decoder.skipUEG(); // bit_rate_value_minus1
                                 decoder.skipUEG(); // cpb_size_value_minus1
 
-                                if (sub_pic_hrd_params_present_flag) {
+                                if (sub_pic_hrd_params_present_flag === 1) {
                                     decoder.skipUEG(); // cpb_size_du_value_minus1
                                     decoder.skipUEG(); // bit_rate_du_value_minus1
                                 }
@@ -523,8 +557,9 @@ export class H265Parser {
             }
         }
 
-        let width = pic_width_in_luma_samples; - conf_win_left_offset - conf_win_right_offset;
-        let height = pic_height_in_luma_samples; - conf_win_top_offset - conf_win_bottom
+        // Calculated values
+        let width = pic_width_in_luma_samples;
+        let height = pic_height_in_luma_samples;
         if (conformance_window_flag === 1)
         {
             let sub_width = (this.HEVCDecoderConfigurationRecord.chromaFormat === 1 ? 2 : 1);
@@ -536,25 +571,48 @@ export class H265Parser {
         this.track.width = width;
         this.track.height = height;
 
-        // May be also 'hvc1.' but in this case parameter sets (VPS/SPS/PPS) SHOULD be included in MP4 samples, NOT ONLY in the hvcC box!
+        // Codec string should start with 'hev1.' or 'hvc1.'.
         this.track.codec = 'hev1.';
-        // Add profile and level to the codec string
+        // Add profile to the codec string
         let profile = this.HEVCDecoderConfigurationRecord.general_profile_idc;
         let sprof = profile.toString();
         this.track.codec += sprof;
-        this.track.codec += '.4.L'; // 4 is the profile compatibility flag
+        this.track.codec += '.';
+
+        // Add profile compatibility flag to the codec string.
+        // As already noted this is a 32-bit value. It's encoded in hexadecimal and leading zeroes may be omitted.
+        // cfr.: https://developer.mozilla.org/en-US/docs/Web/Media/Guides/Formats/codecs_parameter?utm_source=chatgpt.com#hevc_mp4_quicktime_matroska
+        let cf = this.HEVCDecoderConfigurationRecord.general_profile_compatibility_flags;
+        let scf = cf.toString(16).toUpperCase();
+        this.track.codec += scf;
+        this.track.codec += '.';
+        // Add tier to the codec string
+        this.track.codec += (this.HEVCDecoderConfigurationRecord.general_tier_flag === 0 ? 'L' : 'H');
+        // Add level to the codec string
         let level = this.HEVCDecoderConfigurationRecord.general_level_idc;
         let slev = level.toString();
         this.track.codec += slev;
-        this.track.codec += '.B01'; // B01 is the bit depth and chroma format, 01 for 8-bit 4:2:0
-
-        // FFMPEG's way to obtain the hevc codec string 
-        //
-        // if (st->codecpar->codec_tag == MKTAG('h','v','c','1') &&
-        //     profile != FF_PROFILE_UNKNOWN &&
-        //     level != FF_LEVEL_UNKNOWN) {
-        //     snprintf(attr, sizeof(attr), "%s.%d.4.L%d.B01", av_fourcc2str(st->codecpar->codec_tag), profile, level);
-        // } else
+        this.track.codec += '.';
+        // Add constraints to the codec string. "...each byte is encoded as a hexadecimal number, and separated by an additional period; 
+        // trailing bytes that are zero may be omitted."
+        // cfr.: https://developer.mozilla.org/en-US/docs/Web/Media/Guides/Formats/codecs_parameter?utm_source=chatgpt.com#hevc_mp4_quicktime_matroska
+        let k = 5;
+        for (; k >= 0; k--)
+            if (this.HEVCDecoderConfigurationRecord.general_constraint_indicator_flags[k] !== 0)
+                break;
+        if (k >= 0) {
+            for (let l = 0; l <= k; l++) {
+                let hex = this.HEVCDecoderConfigurationRecord.general_constraint_indicator_flags[l].toString(16).toUpperCase();     
+                if (hex.length % 2 === 1) 
+                    hex = '0' + hex;      
+                this.track.codec += hex;
+                if (l < k)
+                    this.track.codec += '.';
+            }
+        }
+        else {
+            this.track.codec += '00';
+        }
 
         this.track.hvcc = this.HEVCDecoderConfigurationRecord;
 
@@ -563,7 +621,7 @@ export class H265Parser {
 
     parsePPS(pps) {
         this.track.pps = [new Uint8Array(pps)];
-        let decoder = new ExpGolomb(new Uint8Array(pps));
+        let decoder = new ExpGolomb(new Uint8Array(extractRbsp(pps.slice(2)))); // skip NALu header and remove emulation prevention bytes
     
         decoder.skipUEG(); // pps_pic_parameter_set_id
         decoder.skipUEG(); // pps_seq_parameter_set_id
@@ -629,15 +687,12 @@ export class H265Parser {
         debug.log(`     general_profile_idc: ${this.HEVCDecoderConfigurationRecord.general_profile_idc}`);
         debug.log(`     general_profile_space: ${this.HEVCDecoderConfigurationRecord.general_profile_space}`);
         debug.log(`     general_profile_compatibility_flags: ${this.HEVCDecoderConfigurationRecord.general_profile_compatibility_flags.toString(16)}`);
-        debug.log(`     general_constraint_indicator_flags(high): ${this.HEVCDecoderConfigurationRecord.general_constraint_indicator_flags_h.toString(16)}`);
-        debug.log(`     general_constraint_indicator_flags(low): ${this.HEVCDecoderConfigurationRecord.general_constraint_indicator_flags_l.toString(16)}`);
+        debug.log(`     general_constraint_indicator_flags(high): ${this.HEVCDecoderConfigurationRecord.general_constraint_indicator_flags.toString(16)}`);
         debug.log(`     min_spatial_segmentation_idc: ${this.HEVCDecoderConfigurationRecord.min_spatial_segmentation_idc}`);
         debug.log(`     parallelismType: ${this.HEVCDecoderConfigurationRecord.parallelismType}`);
         debug.log(`     chromaFormat: ${this.HEVCDecoderConfigurationRecord.chromaFormat}`);
         debug.log(`     bitDepthLumaMinus8: ${this.HEVCDecoderConfigurationRecord.bitDepthLumaMinus8}`);
         debug.log(`     bitDepthChromaMinus8: ${this.HEVCDecoderConfigurationRecord.bitDepthChromaMinus8}`);
-        debug.log(`     avgFrameRate: ${this.HEVCDecoderConfigurationRecord.avgFrameRate}`);
-        debug.log(`     constantFrameRate: ${this.HEVCDecoderConfigurationRecord.constantFrameRate}`);
         debug.log('  ');
         debug.log('-------------------------------------');
         debug.log('  ');
@@ -655,38 +710,34 @@ export class H265Parser {
             case H265NALU.VPS:
                 if (!this.track.vps) {
                     this.parseVPS(unit.getPayload());
-                    if (!this.remuxer.readyToDecode && this.track.pps && this.track.sps && this.track.vps) {
-                        this.remuxer.readyToDecode = true;
-                        debug.log("Ready to decode!");
-                    }
                     debug.log("Got VPS...");
                 }
+                // In realtà il valore di questo flag dipende dal fatto che si vogliano o meno includere i parameter sets nel flusso di output, OVVERO
+                // dal tipo di stream che si intende generare, definito dalla codecString. Se la codecString inizia con 'hev1.' i parameter sets 
+                // NON vanno inclusi nel flusso di output, se inizia con 'hvc1.' vanno inclusi. Qui assumiamo che si voglia generare uno stream 
+                // di tipo 'hvc1.'.
                 push = true;
                 break;
 
             case H265NALU.SPS:
-                if (!this.track.sps) {
+                if (!this.track.sps && this.track.vps) {    // SPS without VPS is ignored
                     if (this.parseSPS(unit.getPayload())) {
-                        if (!this.remuxer.readyToDecode && this.track.pps && this.track.sps && this.track.vps) {
-                            this.remuxer.readyToDecode = true;
-                            debug.log("Ready to decode!");
-                        }
+                        debug.log("Got SPS...");
                     }
-                    debug.log("Got SPS...");
                 }
-                push = true;
+                push = true;    // see comment above regarding the VPS case
                 break;
 
             case H265NALU.PPS:
-                if (!this.track.pps) {
+                if (!this.track.pps && this.track.vps && this.track.sps) {    // PPS without VPS and SPS is ignored
                     this.parsePPS(unit.getPayload());
-                    if (!this.remuxer.readyToDecode && this.track.pps && this.track.sps && this.track.vps) {
+                    debug.log("Got PPS...");
+                    if (!this.remuxer.readyToDecode) {
                         this.remuxer.readyToDecode = true;
                         debug.log("Ready to decode!");
                     }
-                    debug.log("Got PPS...");
                 }
-                push = true;
+                push = true;    // see comment above regarding the VPS case
                 break;
 
             case H265NALU.AUD:

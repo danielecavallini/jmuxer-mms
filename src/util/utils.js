@@ -22,3 +22,22 @@ export function secToTime(sec) {
     result += (minutes < 10 ? '0' + minutes : minutes) + ':' + (seconds < 10 ? '0' + seconds : seconds);
     return result;
 }
+
+// Extract Raw Byte Sequence Payload from a NAL unit by removing emulation prevention bytes (0x03)
+export function extractRbsp(nalUnit) {
+    let rbsp = new Uint8Array(nalUnit.length);
+    let rbspIndex = 0, i = 0;
+    let n = nalUnit.findIndex(value => value == 0x00 );
+    if (n < 0) 
+        return nalUnit;
+    rbsp.set(nalUnit.slice(0, n));
+    for (rbspIndex = i = n; i < nalUnit.length; i++) {
+        // Check for emulation prevention three-byte sequence (0x000003)
+        if (i > n+1 && nalUnit[i - 2] === 0x00 && nalUnit[i - 1] === 0x00 && nalUnit[i] === 0x03) {
+            // Skip the emulation prevention byte (0x03)
+            continue;
+        }
+        rbsp[rbspIndex++] = nalUnit[i];
+    }
+    return rbsp.subarray(0, rbspIndex);
+}
